@@ -66,9 +66,14 @@ tianshu serve-model Qwen/Qwen3-8B --engine vllm --port 8000
 # 现在应用直接打 http://127.0.0.1:11435/v1
 ```
 
+## 文档
+
+- [docs/architecture.md](docs/architecture.md) — 高层定位、模块边界、里程碑。
+- [docs/design.md](docs/design.md) — 实现级详细设计（数据模型 / HTTP 契约 / 路由 / 凭据 / serving 流程）。
+
 ## 状态
 
-早期重构中（从旧的「云端 provider 隧道客户端」重定位而来，云端相关代码已剔除）。详见 [docs/architecture.md](docs/architecture.md)。
+早期重构中（从旧的「云端 provider 隧道客户端」重定位而来，云端相关代码已剔除）。
 
 ## 许可
 
