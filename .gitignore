@@ -1,0 +1,14 @@
+# Rust
+/target
+**/*.rs.bk
+# Cargo.lock is committed: this repo ships a binary application.
+
+# editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# local runtime data
+/data/
+*.log

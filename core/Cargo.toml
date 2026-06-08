@@ -1,0 +1,26 @@
+[package]
+name = "tianshu-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tianshu core: local OpenAI-compatible gateway + provider registry + local LLM serving (vLLM/llama.cpp) + model repo"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+keyring.workspace = true
+once_cell.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
