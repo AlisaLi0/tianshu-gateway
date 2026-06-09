@@ -32,7 +32,9 @@ tianshu-gateway/
 │       ├── gateway.rs   ← 【新】本地 OpenAI 兼容网关 server（axum）
 │       ├── providers.rs ← 【新】上游 provider 注册表（OpenAI/Anthropic/本地兼容）
 │       ├── router.rs    ← 【新】model → provider 路由 + 回退
-│       ├── engine.rs    ← 【留】本地推理引擎进程管理（vLLM/llama.cpp）
+│       ├── serving.rs   ← 【新】一键 serving 编排（argv 组合 + serve_model）
+│       ├── gpu.rs       ← 【新】GPU 探测（nvidia-smi/rocm-smi）
+│       ├── engine.rs    ← 【重构】本地推理引擎进程管理（vLLM/llama.cpp）
 │       ├── models.rs    ← 【留】本地模型仓库 + HF/ModelScope 下载
 │       ├── state.rs     ← 【改】配置持久化 + OS 钥匙串（改存 provider key）
 │       └── util.rs      ← 【留】
@@ -76,10 +78,10 @@ OpenAI 兼容 server（axum），监听 `127.0.0.1:11435`（可配）：
 
 ## 里程碑
 
-1. ⏳ **M1 骨架**：workspace + core 模块（留 engine/models/util、改 state、新增 gateway/providers/router 雏形）+ CLI 雏形，`cargo build` 通过。← 当前
-2. ⏳ **M2 网关可用**：`/v1/models` 聚合 + `/v1/chat/completions` 转发 + 回退打通，能对接真实 OpenAI 兼容上游。
-3. ⏳ **M3 一键 serving**：`tianshu serve-model` 跑通（GPU 检测 → 下载 → 起 vLLM → 自动注册上游）。
-4. ⏳ **M4 桌面 GUI**：加回 `src-tauri/`，图形化管理 provider / 模型 / 引擎 + 托盘。
+1. ✅ **M1 骨架**：workspace + core 模块 + CLI 雏形，`cargo build` 通过。
+2. ✅ **M2 网关可用**：`/v1/models` 聚合 + `/v1/chat/completions` 转发 + 回退 + 流式透传，可对接真实 OpenAI 兼容上游。
+3. ✅ **M3 一键 serving（CLI）**：`tianshu serve-model` 跑通（GPU 检测 → 起 vLLM/llama.cpp → 健康探活 → 自动注册上游 → 开网关）。已在 4090 机端到端验证。
+4. ⏳ **M4 桌面 GUI**：加回 `src-tauri/`，图形化管理 provider / 模型 / 引擎 + 托盘。← 当前
 5. ⏳ **M5 打包发布**：Win NSIS / mac dmg / Linux AppImage + `tianshu` 单二进制，挂 GitHub Release。
 
 ## 设计取舍

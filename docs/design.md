@@ -145,9 +145,9 @@ DownloadRequest { repo_id, revision="main", files[], dest_root, source(HF|MS), t
 - `providers.json` 只存 `needs_key: bool`，**不存明文 key**。
 - 删除 provider（`Registry::remove`）会连带 `clear_provider_key`，不留孤儿密钥。
 
-## 7. 一键 setup local serving 流程（`engine.rs` + `models.rs` + `providers.rs`）
+## 7. 一键 setup local serving 流程（`serving.rs` + `engine.rs` + `gpu.rs` + `models.rs` + `providers.rs`）
 
-目标命令 `tianshu serve-model <repo> --engine vllm --port 8000`（M3，骨架已就位，编排待补）：
+命令 `tianshu serve-model <name> <model> --engine vllm --port 8000`（已实现，编排在 `serving::serve_model`）：
 
 ```
 1. 检测 GPU        sysinfo / rocm-smi --showmeminfo / nvidia-smi
@@ -193,7 +193,17 @@ DownloadRequest { repo_id, revision="main", files[], dest_root, source(HF|MS), t
 tianshu [--data-dir <path>] <cmd>
 
 info                                 显示生效路径/配置
+gpu                                  探测本机 GPU（nvidia-smi / rocm-smi）
 serve [--host H] [--port P]          起本地网关
+serve-model <name> <model>           一键：起引擎 + 注册 + 开网关（前台，Ctrl-C 停引擎+网关）
+        --engine vllm|llama-cpp|custom
+        --port P                     引擎监听端口
+        [--program <exe>]            可覆盖默认 vllm/llama-server
+        [--engine-host H]            默认 127.0.0.1
+        [--served-id ID]             对网关暴露的 model id（默认从 model 推导）
+        [--health-timeout S]         等健康秒数（默认 600）
+        [--gateway-host H] [--gateway-port P]
+        [-- <额外引擎参数>]         原样追加到引擎命令
 provider list                        列出 provider
 provider add <name> --base-url U     增/改 provider
         [--kind openai|local|openai-compatible]
@@ -202,6 +212,8 @@ provider add <name> --base-url U     增/改 provider
 provider rm <name>                   删 provider（连带删钥匙串密钥）
 provider enable|disable <name>
 model list                           列出本地模型
+model download <repo> --files a,b    从 HF/MS 下载（--source hf|ms，--token）
+model rm <repo>                      删本地模型目录
 ```
 
 GUI（M4，Tauri）将复用同一 `tianshu-core`，命令对称。
@@ -209,9 +221,9 @@ GUI（M4，Tauri）将复用同一 `tianshu-core`，命令对称。
 ## 10. 并发模型
 
 - 网关：axum + tokio 多任务；每请求一个 handler，`reqwest::Client` 复用连接池（`GatewayState` 内 `Arc`）。
-- 引擎：`Engines` 持 `Mutex<HashMap<name, EngineHandle>>`，每实例一个子进程句柄。
+- 引擎：`Engines` 持 `Mutex<HashMap<name, EngineHandle>>`，每实例一个子进程句柄；查询时懒 reap（`try_wait`）同步子进程退出状态。
 - 注册表：`Registry` 持 `RwLock<Vec<Provider>>`，读多写少；每次写后整体持久化 `providers.json`。
-- 网关 `reqwest::Client` **无全局超时**（`timeout(0)`）——chat 流式可能长时间运行，不能被超时切断。
+- 网关 `reqwest::Client` **无全局超时**——chat 流式可能长时间运行，不能被超时切断。⚠️ reqwest 默认 client 本就无超时，**别调 `.timeout()`**；`Duration::from_secs(0)` 不是“无超时”而是“立即超时”。
 
 ## 11. 安全模型
 
