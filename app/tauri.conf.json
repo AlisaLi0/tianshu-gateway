@@ -23,13 +23,24 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["deb", "appimage", "nsis"],
+    "category": "DeveloperTool",
+    "shortDescription": "Local-first LLM gateway + one-click model serving",
+    "longDescription": "Tianshu runs a local OpenAI-compatible gateway that aggregates your provider API keys (kept in the OS keyring), routes by model with fallback, and serves local models in one click via vLLM / llama.cpp (native or official docker images).",
+    "publisher": "AlisaLi0",
+    "homepage": "https://github.com/AlisaLi0/tianshu-gateway",
+    "licenseFile": "../LICENSE-MIT",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
   }
 }

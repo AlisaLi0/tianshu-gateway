@@ -97,7 +97,7 @@ OpenAI 兼容 server（axum），监听 `127.0.0.1:11435`（可配）：
 2. ✅ **M2 网关可用**：`/v1/models` 聚合 + `/v1/chat/completions` 转发 + 回退 + 流式透传，可对接真实 OpenAI 兼容上游。
 3. ✅ **M3 一键 serving（CLI）**：`tianshu serve-model` 跑通（GPU/runtime 探测 → native 二进制 或 docker/wsl-docker 拉官方镜像 → 健康探活 → 自动注册上游 → 开网关）。docker runtime 已在 4090 机端到端验证（起容器→健康→路由→SIGINT teardown 无泄漏）。
 4. ✅ **M4 桌面 GUI**：`app/`（Tauri 2）复用同一 `tianshu-core`，图形化管理 gateway / provider / serving / 模型 + 系统托盘（关窗隐藏到托盘，退出时停网关+引擎/清容器）。vanilla 前端，`withGlobalTauri` 免 npm 构建链。本机 `cargo build` + 无头启动冒烟通过。
-5. ⏳ **M5 打包发布**：Win NSIS / mac dmg / Linux AppImage + `tianshu` 单二进制，挂 GitHub Release。← 当前
+5. ✅ **M5 打包发布**：`cargo tauri build` 出 Windows NSIS / Linux deb + AppImage；`tianshu` CLI 单二进制随 release 发。`.github/workflows/release.yml`（tag `v*` 触发，tauri-action 打桌面端 + 单独 job 编 CLI，Ubuntu+Windows 双平台，发草稿 Release）；`ci.yml`（push/PR 跑 build+test+clippy -D warnings）。Linux deb 已本机验证（5.8M，`/usr/bin/tianshu-desktop` + .desktop + 图标 + 依赖自动推导）。双 LICENSE（MIT/Apache-2.0）。
 
 ## 设计取舍
 

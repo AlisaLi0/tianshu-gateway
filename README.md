@@ -51,6 +51,25 @@
 - 本地模型仓库：HF / ModelScope 直链下载（无需 git），磁盘占用统计。
 - 起好的本地引擎自动注册成网关上游。
 
+## 安装
+
+桌面端与 CLI 随 [GitHub Releases](https://github.com/AlisaLi0/tianshu-gateway/releases) 发布：
+
+| 平台 | 桌面端 | CLI |
+|------|--------|-----|
+| Windows | `Tianshu_<ver>_x64-setup.exe`（NSIS） | `tianshu-windows-x86_64.exe` |
+| Ubuntu/Debian | `Tianshu_<ver>_amd64.deb` | `tianshu-linux-x86_64` |
+| 其他 Linux | `Tianshu_<ver>_amd64.AppImage` | 同上 |
+
+```bash
+# Ubuntu/Debian
+sudo apt install ./Tianshu_0.1.0_amd64.deb
+# CLI（任意 Linux）
+chmod +x tianshu-linux-x86_64 && sudo mv tianshu-linux-x86_64 /usr/local/bin/tianshu
+```
+
+> 本地 serving 需要 Docker（拉官方引擎镜像，免手装）或宿主的 vLLM/llama.cpp。先跑 `tianshu setup` 看环境是否就绪。
+
 ## 快速开始（CLI）
 
 ```bash
@@ -60,11 +79,24 @@ tianshu serve
 # 加一个云端 provider（key 进钥匙串）
 tianshu provider add openai --base-url https://api.openai.com/v1 --api-key sk-...
 
-# 一键起本地 vLLM，并注册成上游
-tianshu serve-model Qwen/Qwen3-8B --engine vllm --port 8000
+# 一键起本地 vLLM（有 docker 就拉官方镜像），并注册成上游
+tianshu serve-model qwen3 Qwen/Qwen3-8B --engine vllm --port 8000
 
 # 现在应用直接打 http://127.0.0.1:11435/v1
 ```
+
+## 从源码构建
+
+```bash
+# CLI（纯 Rust，无额外依赖）
+cargo build --release -p tianshu-cli      # → target/release/tianshu
+
+# 桌面端（Tauri 2）
+cargo install tauri-cli --version '^2'
+cargo tauri build          # 在仓库根运行，自动定位 app/tauri.conf.json → target/release/bundle/
+```
+
+Linux 构桌面端需系统库：`libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`。Windows 需 MSVC 工具链 + WebView2（Win11 自带）。
 
 ## 文档
 
@@ -73,8 +105,8 @@ tianshu serve-model Qwen/Qwen3-8B --engine vllm --port 8000
 
 ## 状态
 
-早期重构中（从旧的「云端 provider 隧道客户端」重定位而来，云端相关代码已剔除）。
+M1–M4 已完成（网关 / 一键 serving / 桌面 GUI）；M5 打包发布就绪（`cargo tauri build` 出 deb/AppImage/NSIS，tag 推送走 GitHub Actions 自动发草稿 Release）。详见 [docs/architecture.md](docs/architecture.md) 里程碑。
 
 ## 许可
 
-开源（许可证待定，倾向 MIT / Apache-2.0）。
+双许可 [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)，任选其一。
