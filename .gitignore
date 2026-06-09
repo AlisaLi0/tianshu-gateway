@@ -12,3 +12,6 @@
 # local runtime data
 /data/
 *.log
+
+# Tauri generated (per-platform ACL schemas)
+/app/gen/

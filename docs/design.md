@@ -245,7 +245,20 @@ model download <repo> --files a,b    从 HF/MS 下载（--source hf|ms，--token
 model rm <repo>                      删本地模型目录
 ```
 
-GUI（M4，Tauri）将复用同一 `tianshu-core`，命令对称。
+GUI（`app/`，Tauri 2）复用同一 `tianshu-core`，命令对称（见 §9.1）。
+
+### 9.1 桌面 GUI（`app/src/main.rs` + `app/frontend/`）
+
+Tauri 2 薄壳，把 CLI 的操作暴露成 Tauri commands，前端是 **vanilla HTML/CSS/JS**（`withGlobalTauri: true`，直接 `window.__TAURI__.core.invoke`，不引 npm 构建链——契合单二进制/本地优先）。
+
+- **共享状态** `Ctx { state, registry: Arc<Registry>, engines: Arc<Engines>, gateway: Mutex<Option<GatewayRun>> }`，`tauri::manage` 注入。
+- **网关托管运行**：`gateway_start` 用 `gateway::serve_until` 在后台 task 起网关，持 `oneshot` shutdown 句柄；`gateway_stop` 发信号优雅停。provider 增删即时生效（共享同一 `Registry`）。
+- **commands**：`app_info / gpu_detect / setup_report / provider_{list,add,remove,set_enabled} / gateway_{status,start,stop} / engine_{list,log,stop} / serve_model / model_list`。
+- **serve_model 异步**：后台 task 跑 `serving::serve_model`，完成后 `emit("serve-result", …)`；命令立刻返回引擎名，前端先显示“starting…”，靠 event + 轮询刷新引擎表。
+- **密钥不出壳**：`Provider` 只带 `needs_key: bool`，命令从不回传明文 key（仍在钥匙串）。
+- **系统托盘**：托盘菜单 Show/Quit；左键切换主窗显隐。**关窗 = 隐藏到托盘**（`CloseRequested` → `prevent_close` + hide），真正退出走托盘 Quit。
+- **退出清理**：`RunEvent::ExitRequested` → 停网关 + `engines.stop` 每个引擎（docker 容器借此 `docker rm -f`，不留泄漏）。
+- **前端**：四个 tab（Dashboard 网关开关+环境预检+路径 / Providers 增删+开关 / Serving 一键起+引擎表+日志弹窗 / Models 本地模型）。
 
 ## 10. 并发模型
 

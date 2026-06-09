@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tianshu</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"></div>
+      <div class="brand-text">
+        <strong>Tianshu</strong>
+        <span>Local LLM Gateway</span>
+      </div>
+    </div>
+    <nav>
+      <button class="nav-item active" data-tab="dashboard">Dashboard</button>
+      <button class="nav-item" data-tab="providers">Providers</button>
+      <button class="nav-item" data-tab="serving">Serving</button>
+      <button class="nav-item" data-tab="models">Models</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="gw-pill" class="pill off">gateway off</div>
+    </div>
+  </aside>
+
+  <main class="content">
+    <!-- Dashboard -->
+    <section id="dashboard" class="tab active">
+      <h1>Dashboard</h1>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Gateway</h2>
+          <div class="row gap">
+            <button id="gw-start" class="btn primary">Start</button>
+            <button id="gw-stop" class="btn">Stop</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <label>Host <input id="gw-host" placeholder="127.0.0.1" /></label>
+          <label>Port <input id="gw-port" type="number" placeholder="11435" /></label>
+        </div>
+        <p class="muted">OpenAI base URL for your apps:
+          <code id="gw-baseurl">—</code></p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Environment</h2>
+          <button id="setup-refresh" class="btn small">Refresh</button>
+        </div>
+        <div id="setup-body" class="kv">Loading…</div>
+      </div>
+
+      <div class="card">
+        <h2>Paths</h2>
+        <div id="info-body" class="kv mono">Loading…</div>
+      </div>
+    </section>
+
+    <!-- Providers -->
+    <section id="providers" class="tab">
+      <h1>Providers</h1>
+      <p class="muted">Upstreams the gateway aggregates and routes by model. API keys
+        are stored in the OS keyring — never on disk, never shown here.</p>
+
+      <div class="card">
+        <h2>Add / update provider</h2>
+        <div class="grid2">
+          <label>Name <input id="p-name" placeholder="openai" /></label>
+          <label>Kind
+            <select id="p-kind">
+              <option value="openai_compatible">openai-compatible</option>
+              <option value="openai">openai</option>
+              <option value="local">local</option>
+            </select>
+          </label>
+          <label class="span2">Base URL <input id="p-baseurl" placeholder="https://api.openai.com/v1" /></label>
+          <label class="span2">API key (optional) <input id="p-key" type="password" placeholder="sk-… (kept in OS keyring)" /></label>
+          <label class="span2">Models (comma-separated; empty = wildcard)
+            <input id="p-models" placeholder="gpt-4o, gpt-4o-mini" /></label>
+        </div>
+        <div class="row end"><button id="p-add" class="btn primary">Save provider</button></div>
+      </div>
+
+      <div class="card">
+        <h2>Registered</h2>
+        <table class="tbl" id="p-table">
+          <thead><tr><th>On</th><th>Name</th><th>Kind</th><th>Base URL</th><th>Models</th><th>Key</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Serving -->
+    <section id="serving" class="tab">
+      <h1>One-click serving</h1>
+      <p class="muted">Launch a local engine for a model and auto-register it with the
+        gateway. With Docker present, the official image is pulled — nothing to install.</p>
+
+      <div class="card">
+        <h2>Serve a model</h2>
+        <div class="grid2">
+          <label>Name <input id="s-name" placeholder="qwen3" /></label>
+          <label>Port <input id="s-port" type="number" placeholder="8000" /></label>
+          <label class="span2">Model
+            <input id="s-model" placeholder="Qwen/Qwen3-8B (HF repo) or /path/model.gguf (native)" /></label>
+          <label>Engine
+            <select id="s-engine">
+              <option value="vllm">vLLM</option>
+              <option value="llama-cpp">llama.cpp</option>
+              <option value="custom">custom</option>
+            </select>
+          </label>
+          <label>Runtime
+            <select id="s-runtime">
+              <option value="auto">auto (docker if available)</option>
+              <option value="docker">docker</option>
+              <option value="wsl-docker">wsl-docker</option>
+              <option value="native">native</option>
+            </select>
+          </label>
+          <label>GPUs <input id="s-gpus" placeholder="all (empty to disable)" /></label>
+          <label>Image override <input id="s-image" placeholder="(default per engine)" /></label>
+          <label>WSL distro <input id="s-wsl" placeholder="(default)" /></label>
+          <label>HF token <input id="s-hf" type="password" placeholder="(gated repos)" /></label>
+          <label class="span2">Extra engine args
+            <input id="s-extra" placeholder="--tensor-parallel-size 2" /></label>
+        </div>
+        <div class="row end gap">
+          <span id="s-status" class="muted"></span>
+          <button id="s-go" class="btn primary">Serve</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Engines</h2><button id="e-refresh" class="btn small">Refresh</button></div>
+        <table class="tbl" id="e-table">
+          <thead><tr><th>Name</th><th>Status</th><th>PID</th><th>Started</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Models -->
+    <section id="models" class="tab">
+      <h1>Local models</h1>
+      <p class="muted">Files under the models dir (native serving). Docker runtimes
+        cache weights inside named docker volumes instead.</p>
+      <div class="card">
+        <div class="card-head"><h2>Downloaded</h2><button id="m-refresh" class="btn small">Refresh</button></div>
+        <table class="tbl" id="m-table">
+          <thead><tr><th>Repo</th><th>Size</th><th>Files</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div id="toast" class="toast"></div>
+
+    <!-- log modal -->
+    <div id="log-modal" class="modal hidden">
+      <div class="modal-box">
+        <div class="modal-head"><strong id="log-title">Log</strong><button id="log-close" class="btn small">Close</button></div>
+        <pre id="log-body"></pre>
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
