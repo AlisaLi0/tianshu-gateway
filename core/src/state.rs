@@ -15,7 +15,7 @@ const KEYRING_SERVICE: &str = "tianshu";
 pub const DEFAULT_GATEWAY_HOST: &str = "127.0.0.1";
 pub const DEFAULT_GATEWAY_PORT: u16 = 11435;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     /// Local gateway bind host (default 127.0.0.1 — local only).
     pub gateway_host: Option<String>,
@@ -28,19 +28,6 @@ pub struct Settings {
     /// vLLM / llama.cpp executable paths (auto-detected on first run).
     pub vllm_exe: Option<PathBuf>,
     pub llama_server_exe: Option<PathBuf>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            gateway_host: None,
-            gateway_port: None,
-            models_dir: None,
-            logs_dir: None,
-            vllm_exe: None,
-            llama_server_exe: None,
-        }
-    }
 }
 
 impl Settings {

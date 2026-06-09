@@ -34,8 +34,9 @@ pub struct GatewayState {
 impl GatewayState {
     pub fn new(registry: Arc<Registry>) -> Self {
         // No global timeout: chat completions may stream for a long time.
+        // reqwest's default client has *no* timeout already — do NOT pass
+        // `Duration::from_secs(0)`, which means "time out immediately".
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(0))
             .build()
             .expect("build reqwest client");
         Self { registry, client }
@@ -127,10 +128,20 @@ fn err(code: StatusCode, msg: &str) -> Response {
 
 /// Bind and serve until the process is terminated.
 pub async fn serve(state: GatewayState, host: &str, port: u16) -> Result<()> {
+    serve_until(state, host, port, std::future::pending::<()>()).await
+}
+
+/// Bind and serve until `shutdown` resolves, then shut down gracefully.
+pub async fn serve_until<F>(state: GatewayState, host: &str, port: u16, shutdown: F) -> Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     let app = build_router(state);
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("tianshu gateway listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
 }

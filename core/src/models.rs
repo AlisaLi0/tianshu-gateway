@@ -2,12 +2,13 @@
 //!
 //! Tracks files under a user-chosen models directory. Provides:
 //!   * `list_local`     — walk the dir, group by repo (`org/repo`).
-//!   * `disk_usage`     — `du -sb` equivalent.
-//!   * `download_hf`    — git-free HF download via `https://huggingface.co/{repo}/resolve/{rev}/{file}`.
-//!   * `download_ms`    — ModelScope analog.
+//!   * `disk_usage`     — total bytes under a path.
+//!   * `download`       — git-free streaming download from HF / ModelScope.
 //!   * `delete_local`   — remove a model directory.
 //!
-//! Downloads stream to a temp file, then atomic rename. Supports HF token via
+//! `download` requires an explicit `files` list (resolve it from the HF/MS
+//! API beforehand). Each file streams to a `.part` temp file, then an atomic
+//! rename. A private/rate-limited repo can pass a token via
 //! `Authorization: Bearer`.
 
 use anyhow::{anyhow, Result};
@@ -135,9 +136,9 @@ pub async fn download(req: DownloadRequest, mut on_progress: impl FnMut(Download
         return Err(anyhow!("`files` list is empty; pre-resolve via gateway/HF API"));
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(0))
-        .build()?;
+    // No global timeout (model files are large); reqwest's default client has
+    // none. Passing `Duration::from_secs(0)` would mean "time out immediately".
+    let client = reqwest::Client::builder().build()?;
 
     for file in &req.files {
         let url = match req.source {

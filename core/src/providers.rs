@@ -15,7 +15,7 @@ use std::sync::RwLock;
 
 use crate::state;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ProviderKind {
     /// Native OpenAI API or anything that speaks the same `/v1` wire format.
     #[serde(rename = "openai")]
@@ -25,13 +25,8 @@ pub enum ProviderKind {
     Local,
     /// Generic OpenAI-compatible endpoint (DeepSeek, SiliconFlow, Together, …).
     #[serde(rename = "openai_compatible")]
+    #[default]
     OpenAICompatible,
-}
-
-impl Default for ProviderKind {
-    fn default() -> Self {
-        ProviderKind::OpenAICompatible
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

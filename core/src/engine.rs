@@ -1,31 +1,34 @@
-//! Inference engine lifecycle (vLLM / llama.cpp / text-generation-webui-style).
+//! Inference engine process lifecycle (vLLM / llama.cpp / custom).
 //!
-//! Spawns the user-chosen engine as a child process with stdout/stderr
-//! redirected to a log file. We intentionally keep this transparent: the
-//! caller fully composes the argv vector. We only own
-//!   * spawn / kill / wait
-//!   * log file (append)
-//!   * "is :port reachable" health check
+//! Spawns a fully caller-composed command as a child process with stdout and
+//! stderr redirected to a per-engine log file. We deliberately stay
+//! transparent: the caller owns the whole argv (see `serving::build_argv`); we
+//! own only
+//!   * spawn / kill / wait, plus lazy reaping of children that exited on their own
+//!   * the append-mode log file
+//!   * a "host:port reachable + GET /v1/models 2xx" health probe
 //!
-//! Convention: each engine instance is identified by a user-supplied `name`
-//! (e.g. "qwen36-awq-6-7"). State persists across restarts in `engines.json`.
+//! Each engine instance is keyed by a user-supplied `name`. Engines live for
+//! the lifetime of the owning process (`kill_on_drop` + unix process-group
+//! isolation) and are **not** persisted across restarts — a child cannot
+//! outlive its parent.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::state::AppState;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineKind {
+    #[serde(rename = "vllm")]
     Vllm,
+    #[serde(rename = "llama_cpp")]
     LlamaCpp,
+    #[serde(rename = "custom")]
     Custom,
 }
 
@@ -58,8 +61,9 @@ pub struct EngineStatus {
 
 struct EngineHandle {
     cfg: EngineConfig,
-    status: Arc<Mutex<EngineStatus>>,
-    child: Mutex<Option<tokio::process::Child>>,
+    status: EngineStatus,
+    /// `Some` while the child is believed alive; lazily cleared on reap.
+    child: Option<tokio::process::Child>,
 }
 
 pub struct Engines {
@@ -81,18 +85,22 @@ impl Engines {
     }
 
     pub async fn list(&self) -> Vec<EngineStatus> {
-        let g = self.handles.lock().await;
+        let mut g = self.handles.lock().await;
         let mut out = Vec::with_capacity(g.len());
-        for h in g.values() {
-            out.push(h.status.lock().await.clone());
+        for h in g.values_mut() {
+            reap(h);
+            out.push(h.status.clone());
         }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
 
-    pub async fn start(&self, _state: Arc<AppState>, cfg: EngineConfig) -> Result<EngineStatus> {
+    /// Spawn the engine. Fails if an engine of the same name is still running.
+    pub async fn start(&self, cfg: EngineConfig) -> Result<EngineStatus> {
         let mut g = self.handles.lock().await;
-        if let Some(h) = g.get(&cfg.name) {
-            if h.child.lock().await.is_some() {
+        if let Some(h) = g.get_mut(&cfg.name) {
+            reap(h);
+            if h.child.is_some() {
                 return Err(anyhow!("engine '{}' already running", cfg.name));
             }
         }
@@ -111,7 +119,9 @@ impl Engines {
         if let Some(d) = cfg.cwd.as_ref() {
             cmd.current_dir(d);
         } else if let Some(parent) = cfg.program.parent() {
-            cmd.current_dir(parent);
+            if !parent.as_os_str().is_empty() {
+                cmd.current_dir(parent);
+            }
         }
         for (k, v) in &cfg.env {
             cmd.env(k, v);
@@ -124,51 +134,52 @@ impl Engines {
             cmd.process_group(0);
         }
 
-        let child = cmd.spawn()?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| anyhow!("spawn '{}' failed: {e}", cfg.program.display()))?;
         let pid = child.id();
 
-        let status = Arc::new(Mutex::new(EngineStatus {
+        let status = EngineStatus {
             name: cfg.name.clone(),
             running: true,
             pid,
             last_started_at: Some(now_str()),
-            log_path: Some(log_path.clone()),
-            ..Default::default()
-        }));
+            log_path: Some(log_path),
+            last_error: None,
+            healthy: None,
+        };
+        let snapshot = status.clone();
 
         g.insert(
             cfg.name.clone(),
             EngineHandle {
                 cfg,
-                status: status.clone(),
-                child: Mutex::new(Some(child)),
+                status,
+                child: Some(child),
             },
         );
-
-        let snapshot = status.lock().await.clone();
         Ok(snapshot)
     }
 
     pub async fn stop(&self, name: &str) -> Result<()> {
         let mut g = self.handles.lock().await;
-        if let Some(h) = g.remove(name) {
-            if let Some(mut child) = h.child.lock().await.take() {
+        if let Some(h) = g.get_mut(name) {
+            if let Some(mut child) = h.child.take() {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
             }
-            let mut s = h.status.lock().await;
-            s.running = false;
-            s.pid = None;
+            h.status.running = false;
+            h.status.pid = None;
+            h.status.healthy = Some(false);
         }
         Ok(())
     }
 
     pub async fn status(&self, name: &str) -> Option<EngineStatus> {
-        let g = self.handles.lock().await;
-        if let Some(h) = g.get(name) {
-            return Some(h.status.lock().await.clone());
-        }
-        None
+        let mut g = self.handles.lock().await;
+        let h = g.get_mut(name)?;
+        reap(h);
+        Some(h.status.clone())
     }
 
     pub async fn tail_log(&self, name: &str, max_lines: usize) -> Result<String> {
@@ -176,35 +187,89 @@ impl Engines {
         crate::util::tail_file(&p, max_lines).await
     }
 
-    /// Probe TCP first, then `GET http://host:port/v1/models` quickly.
+    /// Probe TCP, then `GET http://host:port/v1/models`. Records the result
+    /// back into the engine's `healthy` status. Returns `false` if the engine
+    /// is unknown or no longer running.
     pub async fn health(&self, name: &str) -> Result<bool> {
-        let g = self.handles.lock().await;
-        let Some(h) = g.get(name) else {
-            return Ok(false);
+        let (host, port, alive) = {
+            let mut g = self.handles.lock().await;
+            let Some(h) = g.get_mut(name) else {
+                return Ok(false);
+            };
+            reap(h);
+            (h.cfg.host.clone(), h.cfg.port, h.child.is_some())
         };
-        let host = h.cfg.host.clone();
-        let port = h.cfg.port;
-        drop(g);
 
-        let addr = format!("{host}:{port}");
-        let tcp_ok = tokio::net::TcpStream::connect(&addr)
-            .await
-            .map(|_| true)
-            .unwrap_or(false);
-        if !tcp_ok {
-            return Ok(false);
+        let ok = if alive { probe(&host, port).await } else { false };
+
+        let mut g = self.handles.lock().await;
+        if let Some(h) = g.get_mut(name) {
+            h.status.healthy = Some(ok);
         }
-        let url = format!("http://{addr}/v1/models");
-        let resp = reqwest::Client::new()
-            .get(&url)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await;
-        Ok(resp.map(|r| r.status().is_success()).unwrap_or(false))
+        Ok(ok)
+    }
+
+    /// Poll `health` until it succeeds, the process exits, or `timeout` elapses.
+    pub async fn wait_healthy(&self, name: &str, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if self.health(name).await.unwrap_or(false) {
+                return true;
+            }
+            // Bail early if the child already died.
+            if let Some(s) = self.status(name).await {
+                if !s.running {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(800)).await;
+        }
     }
 }
 
-// ─── helpers (shared with tunnel.rs intentionally minimal) ───────────────────
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Non-blocking reap: if the child has exited on its own, clear the handle and
+/// reflect it in the status (capturing a non-zero exit into `last_error`).
+fn reap(h: &mut EngineHandle) {
+    if let Some(child) = h.child.as_mut() {
+        match child.try_wait() {
+            Ok(Some(exit)) => {
+                h.status.running = false;
+                h.status.pid = None;
+                h.status.healthy = Some(false);
+                if !exit.success() {
+                    h.status.last_error = Some(format!("process exited: {exit}"));
+                }
+                h.child = None;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                h.status.last_error = Some(format!("try_wait failed: {e}"));
+            }
+        }
+    }
+}
+
+async fn probe(host: &str, port: u16) -> bool {
+    let addr = format!("{host}:{port}");
+    if tokio::net::TcpStream::connect(&addr).await.is_err() {
+        return false;
+    }
+    let url = format!("http://{addr}/v1/models");
+    reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
 
 fn open_append(p: &Path) -> Result<std::fs::File> {
     if let Some(d) = p.parent() {
