@@ -69,18 +69,26 @@ OpenAI 兼容 server（axum），监听 `127.0.0.1:11435`（可配）：
 - **凭据**：`api_key_ref` 指向 OS 钥匙串条目名；明文 key 不进 `providers.json`。
 - **路由**：同一 `model` 可由多个 provider 提供，按注册顺序为优先级，连接失败 / 5xx 自动回退。
 
-### 2. 一键 setup local LLM serving（`engine.rs` + `models.rs`）
+### 2. 一键 setup local LLM serving（`serving.rs` + `engine.rs` + `gpu.rs` + `provision.rs`）
 
-1. 检测 GPU（`rocm-smi --showmeminfo` / `nvidia-smi`）。
-2. 选模型（本地已有，或从 HF/MS 下载）。
-3. 生成 vLLM / llama.cpp argv 并 `engine.start`。
-4. 健康探活通过后，**自动 `providers.add` 一个指向 `http://127.0.0.1:<port>/v1` 的本地 provider**，于是它立刻出现在网关 `/v1/models` 里。
+原则：**不自研推理内核，但也不让用户自己装引擎**。天枢负责把引擎准备好。
+
+1. 探测 GPU（`nvidia-smi` / `rocm-smi`）+ runtime（`provision::detect_docker`：直连 docker / WSL 里的 docker / 无）。
+2. 按 `Runtime` 生成启动命令：
+   - `native` — 起宿主引擎二进制（如 Windows 预编译 `llama-server.exe`）；
+   - `docker` — `docker run` 官方镜像（`vllm/vllm-openai`、`ghcr.io/ggml-org/llama.cpp:server-cuda`），权重在容器内从 HF 拉（`--model` / `-hf`），缓存落在具名 docker volume（免宿主路径映射，WSL 安全）；
+   - `wsl-docker` — 同上，外包 `wsl -- docker …`（Windows 且 docker 在 WSL2 distro）。
+3. `engine.start` 起进程（日志文件、进程组隔离、kill_on_drop、记 teardown）。
+4. 健康探活通过后，**自动注册一个指向 `http://127.0.0.1:<port>/v1` 的本地 provider**，立刻出现在网关 `/v1/models`。
+5. 容器仅本地发布 `127.0.0.1:<port>`；stop 时 `docker rm -f` 清容器。
+
+`tianshu setup` 预检 GPU + docker/WSL，告诉用户是“开箱即用”还是要装 Docker。
 
 ## 里程碑
 
 1. ✅ **M1 骨架**：workspace + core 模块 + CLI 雏形，`cargo build` 通过。
 2. ✅ **M2 网关可用**：`/v1/models` 聚合 + `/v1/chat/completions` 转发 + 回退 + 流式透传，可对接真实 OpenAI 兼容上游。
-3. ✅ **M3 一键 serving（CLI）**：`tianshu serve-model` 跑通（GPU 检测 → 起 vLLM/llama.cpp → 健康探活 → 自动注册上游 → 开网关）。已在 4090 机端到端验证。
+3. ✅ **M3 一键 serving（CLI）**：`tianshu serve-model` 跑通（GPU/runtime 探测 → native 二进制 或 docker/wsl-docker 拉官方镜像 → 健康探活 → 自动注册上游 → 开网关）。docker runtime 已在 4090 机端到端验证（起容器→健康→路由→SIGINT teardown 无泄漏）。
 4. ⏳ **M4 桌面 GUI**：加回 `src-tauri/`，图形化管理 provider / 模型 / 引擎 + 托盘。← 当前
 5. ⏳ **M5 打包发布**：Win NSIS / mac dmg / Linux AppImage + `tianshu` 单二进制，挂 GitHub Release。
 

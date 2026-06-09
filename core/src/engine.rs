@@ -36,7 +36,7 @@ pub enum EngineKind {
 pub struct EngineConfig {
     pub name: String,
     pub kind: EngineKind,
-    /// Absolute path of the binary (e.g. `vllm`, `llama-server`, or an interpreter).
+    /// Absolute path of the binary (e.g. `vllm`, `llama-server`, `docker`, `wsl`).
     pub program: PathBuf,
     pub args: Vec<String>,
     /// Working dir for the child; defaults to program's parent.
@@ -46,6 +46,11 @@ pub struct EngineConfig {
     /// expose host:port for the engine (used for health probe).
     pub host: String,
     pub port: u16,
+    /// Optional command run on `stop`, after killing the child. Used by the
+    /// container runtimes to `docker rm -f` the container, since SIGKILLing a
+    /// foreground `docker run` client does not stop the container itself.
+    #[serde(default)]
+    pub teardown: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -171,6 +176,12 @@ impl Engines {
             h.status.running = false;
             h.status.pid = None;
             h.status.healthy = Some(false);
+            // Run teardown (e.g. `docker rm -f`) — the container outlives a
+            // SIGKILLed `docker run` client, so this is how it really stops.
+            if let Some(td) = h.cfg.teardown.clone() {
+                drop(g);
+                run_teardown(&td).await;
+            }
         }
         Ok(())
     }
@@ -253,6 +264,25 @@ fn reap(h: &mut EngineHandle) {
                 h.status.last_error = Some(format!("try_wait failed: {e}"));
             }
         }
+    }
+}
+
+/// Best-effort teardown command (e.g. `docker rm -f <name>`), capped at 20s so
+/// a hung daemon cannot block shutdown forever.
+async fn run_teardown(cmd: &[String]) {
+    let Some((program, args)) = cmd.split_first() else {
+        return;
+    };
+    let fut = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match tokio::time::timeout(Duration::from_secs(20), fut).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::warn!("teardown '{}' failed to run: {e}", program),
+        Err(_) => tracing::warn!("teardown '{}' timed out", program),
     }
 }
 

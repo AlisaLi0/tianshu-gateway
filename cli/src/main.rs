@@ -19,9 +19,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tianshu_core::engine::{EngineKind, Engines};
 use tianshu_core::models::{DownloadRequest, DownloadSource};
 use tianshu_core::providers::{Provider, ProviderKind, Registry};
-use tianshu_core::serving::{self, ServeSpec};
+use tianshu_core::serving::{self, DockerOpts, Runtime, ServeSpec};
 use tianshu_core::state::AppState;
-use tianshu_core::{gateway, gpu, models};
+use tianshu_core::{gateway, gpu, models, provision};
 
 #[derive(Parser)]
 #[command(name = "tianshu", version, about = "Local-first LLM gateway + one-click model serving")]
@@ -34,11 +34,14 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // CLI parsed once; variant size is irrelevant
 enum Cmd {
     /// Show effective paths & config.
     Info,
     /// Detect local GPUs (nvidia-smi / rocm-smi).
     Gpu,
+    /// Preflight: what's ready for one-click serving (GPU + docker/WSL).
+    Setup,
     /// Run the local OpenAI-compatible gateway.
     Serve(ServeArgs),
     /// One-click: launch a local engine for a model and serve it via the gateway.
@@ -65,18 +68,41 @@ struct ServeArgs {
 struct ServeModelArgs {
     /// Engine + provider name (unique), e.g. "qwen3-vllm".
     name: String,
-    /// vLLM: an HF repo id (vLLM downloads it). llama.cpp: a .gguf path.
+    /// vLLM: an HF repo id. llama.cpp: an HF repo (docker `-hf`) or a local
+    /// .gguf path (native runtime).
     model: String,
     /// Inference engine to launch.
     #[arg(long, value_enum, default_value_t = EngineArg::Vllm)]
     engine: EngineArg,
-    /// Engine executable override (default: `vllm` / `llama-server`).
+    /// How to launch it. `auto` = use docker if available (so nothing needs
+    /// installing), else a native binary.
+    #[arg(long, value_enum, default_value_t = RuntimeArg::Auto)]
+    runtime: RuntimeArg,
+    /// Docker image override (default per engine).
+    #[arg(long)]
+    image: Option<String>,
+    /// `--gpus` value for docker (default "all"; empty disables GPU passing).
+    #[arg(long)]
+    gpus: Option<String>,
+    /// WSL distro for the wsl-docker runtime (default distro if unset).
+    #[arg(long)]
+    wsl_distro: Option<String>,
+    /// Container-internal port override (default: vLLM 8000 / llama.cpp 8080).
+    #[arg(long)]
+    container_port: Option<u16>,
+    /// Named docker volume for the model cache (override the default).
+    #[arg(long)]
+    cache_volume: Option<String>,
+    /// HF token for gated/rate-limited repos (native env + docker `-e`).
+    #[arg(long, env = "HF_TOKEN")]
+    hf_token: Option<String>,
+    /// Engine executable override (native runtime; default `vllm`/`llama-server`).
     #[arg(long)]
     program: Option<PathBuf>,
-    /// Engine bind host (default 127.0.0.1 — local only).
+    /// Probe host (where the gateway reaches the engine; default 127.0.0.1).
     #[arg(long, default_value = "127.0.0.1")]
     engine_host: String,
-    /// Engine bind port.
+    /// Host port the engine (or its published container port) listens on.
     #[arg(long)]
     port: u16,
     /// Model id exposed to the gateway (default: derived from `model`).
@@ -111,6 +137,14 @@ impl From<EngineArg> for EngineKind {
             EngineArg::Custom => EngineKind::Custom,
         }
     }
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum RuntimeArg {
+    Auto,
+    Native,
+    Docker,
+    WslDocker,
 }
 
 #[derive(Subcommand)]
@@ -240,6 +274,29 @@ async fn main() -> Result<()> {
             }
         }
 
+        Cmd::Setup => {
+            let r = provision::setup_report().await;
+            println!("GPU:");
+            if r.gpus.is_empty() {
+                println!("  (none — nvidia-smi / rocm-smi not found; engines will run on CPU)");
+            }
+            for g in &r.gpus {
+                println!("  {g}");
+            }
+            println!("Docker: {}", r.docker.describe());
+            match r.docker.runtime() {
+                Some(rt) => println!("  → one-click serving ready (runtime: {rt:?}); nothing to install"),
+                None => {
+                    if r.wsl {
+                        println!("  → WSL present but no docker inside it. Install Docker (Desktop, or inside WSL) to pull engine images.");
+                    } else {
+                        println!("  → install Docker Desktop (Windows/mac) or docker (Linux) for image-based serving,");
+                        println!("    or use `--runtime native` with a local engine binary.");
+                    }
+                }
+            }
+        }
+
         Cmd::Serve(args) => {
             let host = args
                 .host
@@ -264,17 +321,47 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Resolve runtime: `auto` prefers docker so nothing needs installing.
+            let runtime = match a.runtime {
+                RuntimeArg::Native => Runtime::Native,
+                RuntimeArg::Docker => Runtime::Docker,
+                RuntimeArg::WslDocker => Runtime::WslDocker,
+                RuntimeArg::Auto => {
+                    let access = provision::detect_docker().await;
+                    match access.runtime() {
+                        Some(rt) => {
+                            println!("runtime: {rt:?} (via {})", access.describe());
+                            rt
+                        }
+                        None => {
+                            println!("runtime: Native (docker not found; using a host engine binary)");
+                            Runtime::Native
+                        }
+                    }
+                }
+            };
+
             let engine_name = a.name.clone();
             let engines = Engines::new(state.logs_dir());
             let registry = Arc::new(Registry::load(state.providers_path())?);
 
             let mut spec = ServeSpec::new(a.name, a.engine.into(), a.model, a.port);
+            spec.runtime = runtime;
             spec.host = a.engine_host;
             spec.program = a.program;
             if let Some(id) = a.served_id {
                 spec.served_model_id = id;
             }
             spec.extra_args = a.extra_args;
+            spec.docker = DockerOpts {
+                image: a.image,
+                gpus: a.gpus,
+                container_port: a.container_port,
+                cache_volume: a.cache_volume,
+                hf_token: a.hf_token,
+                wsl_distro: a.wsl_distro,
+                extra_docker_args: Vec::new(),
+            };
             let served = spec.served_model_id.clone();
 
             serving::serve_model(

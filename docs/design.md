@@ -19,7 +19,10 @@ core/src/
 ├── gateway.rs    本地 OpenAI 兼容 HTTP server（axum）
 ├── providers.rs  上游 provider 注册表（持久化 + 钥匙串）
 ├── router.rs     model → provider 候选解析 + 排序
-├── engine.rs     本地推理引擎进程管理（vLLM/llama.cpp）
+├── serving.rs    一键 serving 编排（runtime/argv 组合 + serve_model）
+├── engine.rs     本地引擎进程管理（spawn/kill/health/teardown）
+├── gpu.rs        GPU 探测（nvidia-smi / rocm-smi）
+├── provision.rs  docker / WSL 探测 + runtime 自动选择
 ├── models.rs     本地模型仓库 + HF/ModelScope 下载
 ├── state.rs      配置持久化 + 钥匙串凭据 helper
 └── util.rs       tail_file 等
@@ -145,25 +148,43 @@ DownloadRequest { repo_id, revision="main", files[], dest_root, source(HF|MS), t
 - `providers.json` 只存 `needs_key: bool`，**不存明文 key**。
 - 删除 provider（`Registry::remove`）会连带 `clear_provider_key`，不留孤儿密钥。
 
-## 7. 一键 setup local serving 流程（`serving.rs` + `engine.rs` + `gpu.rs` + `models.rs` + `providers.rs`）
+## 7. 一键 setup local serving 流程（`serving.rs` + `engine.rs` + `gpu.rs` + `provision.rs` + `providers.rs`）
 
-命令 `tianshu serve-model <name> <model> --engine vllm --port 8000`（已实现，编排在 `serving::serve_model`）：
+核心原则：**用户不需要手动装推理引擎**。天枢不自研内核，但负责把引擎准备好——默认拉官方 docker 镜像跑。`Runtime` 决定怎么起：
+
+| runtime | 怎么起 | 适用 |
+|---|---|---|
+| `native` | 直接 spawn 宿主二进制（PATH / `--program`） | Windows 上捆绑/预编译的 `llama-server.exe` |
+| `docker` | `docker run` 官方镜像 | Docker Desktop（Win/mac）或 Linux 原生 docker |
+| `wsl-docker` | `wsl [-d <distro>] -- docker run …` | Windows 且 docker 在 WSL2 distro 里 |
+
+`tianshu serve-model <name> <model> --engine vllm --port 8000`（默认 `--runtime auto`：有 docker 就用镜像，否则 native），编排在 `serving::serve_model`：
 
 ```
-1. 检测 GPU        sysinfo / rocm-smi --showmeminfo / nvidia-smi
-2. 确保模型在本地   models::list_local 命中？否则 models::download（HF/MS 直链，流式 + 原子 rename）
-3. 组合引擎 argv    vllm serve <model> --port <port> ... / llama-server -m <gguf> --port <port>
-4. 启动进程        engine::start（stdout/stderr→日志文件，进程组隔离，kill_on_drop）
-5. 健康探活        engine::health：先 TCP，再 GET /v1/models 200
-6. 自动注册上游    providers::local_provider(name, 127.0.0.1, port, [model]) → Registry::upsert
-                   ⇒ 立刻出现在网关 /v1/models，下游可直接调用
+1. 探测 GPU + runtime   gpu::detect + provision::detect_docker（auto 选 docker/wsl-docker/native）
+2. 组合启动命令       serving::build_command（按 runtime），全量 argv 先打日志
+3. 启动进程           engine::start（日志文件、进程组隔离、kill_on_drop、记 teardown）
+4. 健康探活           engine::wait_healthy：先 TCP，再 GET /v1/models 2xx
+5. 自动注册上游       providers::local_provider(name, 127.0.0.1, port, [model]) → Registry::upsert
+                     ⇒ 立刻出现在网关 /v1/models，下游可直接调用
 ```
 
-引擎进程管理细节：
+各 runtime 生成的启动命令：
+- **native**：`vllm serve <model> --host H --port P --served-model-name <id>` / `llama-server -m <gguf> --host H --port P --alias <id>`。
+- **docker**：`docker run --rm --name tianshu-<name> [--gpus all] -p 127.0.0.1:<port>:<内部端口> -v <named-vol>:<cache> [-e HF_TOKEN] <image> <容器内引擎参数>`。
+  - 镜像默认：vLLM=`vllm/vllm-openai:latest`（内部 8000），llama.cpp=`ghcr.io/ggml-org/llama.cpp:server-cuda`（内部 8080）。
+  - **权重在容器内下载**：vLLM `--model <hf-repo>`；llama.cpp `-hf <hf-repo>`。缓存落在**具名 docker volume**（`tianshu-hf-cache` / `tianshu-llama-cache`）——不用宿主路径映射，Docker Desktop 与 WSL 内都干净跑通。
+  - **仅本地发布** `-p 127.0.0.1:<port>:…`（本地优先，不上公网）。
+- **wsl-docker**：同 docker，外包 `wsl [-d <distro>] -- docker …`。
+
+引擎进程管理细节（`engine.rs`）：
 - **进程组隔离**（unix `process_group(0)`）：kill 时不误伤父进程。
-- **`kill_on_drop(true)`**：句柄析构即终止子进程，避免孤儿。
-- **日志**：`<logs_dir>/engine-<sanitized-name>.log`，append 模式，stdout/stderr 合流。
-- **健康**：TCP 可连 + `/v1/models` 返回 2xx 才算 healthy。
+- **`kill_on_drop(true)`**：句柄析构即终止子进程。
+- **`teardown`**：stop 时除了杀子进程，还跑 `docker rm -f tianshu-<name>`——因为 SIGKILL 前台 `docker run` 客户端并不会停容器，必须显式清。容器崩溃自退则靠 `try_wait` 懒 reap 反映到状态。
+- **懒 reap**：`status/list/health` 时 `try_wait` 同步子进程退出（running=false，非零退出记 last_error）。
+- **健康**：TCP 可连 + `/v1/models` 2xx；docker 下探 `127.0.0.1:<port>`（映射到容器内部端口）。
+
+`tianshu setup`（`provision::setup_report`）预检：列 GPU + docker 接入方式（直连 / WSL / 无），告诉用户“开箱即用”还是缺什么。
 
 模型下载细节（`models::download`）：
 - HF：`https://huggingface.co/{repo}/resolve/{rev}/{file}`；MS：ModelScope repo API。
@@ -194,12 +215,20 @@ tianshu [--data-dir <path>] <cmd>
 
 info                                 显示生效路径/配置
 gpu                                  探测本机 GPU（nvidia-smi / rocm-smi）
+setup                                预检：GPU + docker/WSL 是否就绪（一键 serving 前提）
 serve [--host H] [--port P]          起本地网关
 serve-model <name> <model>           一键：起引擎 + 注册 + 开网关（前台，Ctrl-C 停引擎+网关）
         --engine vllm|llama-cpp|custom
-        --port P                     引擎监听端口
-        [--program <exe>]            可覆盖默认 vllm/llama-server
-        [--engine-host H]            默认 127.0.0.1
+        --runtime auto|native|docker|wsl-docker   默认 auto（有 docker 就用镜像，否则 native）
+        --port P                     宿主端口（docker 下=容器发布端口）
+        [--image IMG]                docker 镜像覆盖（默认按引擎）
+        [--gpus all|...]             docker --gpus（默认 all；空串禁用）
+        [--wsl-distro NAME]          wsl-docker 用的 distro
+        [--container-port P]         容器内部端口（默认 vLLM 8000 / llama.cpp 8080）
+        [--cache-volume NAME]        模型缓存的具名 docker volume
+        [--hf-token T]               gated/限流 repo（native env + docker -e）
+        [--program <exe>]            native：覆盖默认 vllm/llama-server
+        [--engine-host H]            探针 host，默认 127.0.0.1
         [--served-id ID]             对网关暴露的 model id（默认从 model 推导）
         [--health-timeout S]         等健康秒数（默认 600）
         [--gateway-host H] [--gateway-port P]
